@@ -3,14 +3,44 @@ Flask app for swatch detection
 Deployed on Render with Docker
 """
 
-from flask import Flask, request, jsonify
-import cv2
-import numpy as np
-import base64
-import io
-from PIL import Image
+import sys
+import traceback
 
+print("Starting imports...", file=sys.stderr)
+
+try:
+    from flask import Flask, request, jsonify
+    print("✓ Flask imported", file=sys.stderr)
+except Exception as e:
+    print(f"✗ Flask import failed: {e}", file=sys.stderr)
+    traceback.print_exc()
+
+try:
+    import cv2
+    print("✓ cv2 imported", file=sys.stderr)
+except Exception as e:
+    print(f"✗ cv2 import failed: {e}", file=sys.stderr)
+    traceback.print_exc()
+
+try:
+    import numpy as np
+    print("✓ numpy imported", file=sys.stderr)
+except Exception as e:
+    print(f"✗ numpy import failed: {e}", file=sys.stderr)
+    traceback.print_exc()
+
+try:
+    import base64
+    import io
+    from PIL import Image
+    print("✓ All other imports successful", file=sys.stderr)
+except Exception as e:
+    print(f"✗ Other imports failed: {e}", file=sys.stderr)
+    traceback.print_exc()
+
+print("Creating Flask app...", file=sys.stderr)
 app = Flask(__name__)
+print("Flask app created successfully", file=sys.stderr)
 
 
 class SwatchDetector:
@@ -24,47 +54,29 @@ class SwatchDetector:
 
     def detect_swatches(self):
         """Main detection pipeline"""
-
-        # Reduce noise with bilateral filter
         blurred = cv2.bilateralFilter(self.image, 9, 75, 75)
-
-        # Find edges
         gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 150)
-
-        # Dilate to connect nearby edges
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         dilated = cv2.dilate(edges, kernel, iterations=2)
-
-        # Find contours
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # Analyze each contour
         for contour in contours:
             area = cv2.contourArea(contour)
-
-            # Skip if too small or too large
-            if area < self.min_swatch_area:
-                continue
-            if area > self.width * self.height * 0.5:
+            if area < self.min_swatch_area or area > self.width * self.height * 0.5:
                 continue
 
-            # Get bounding box
             x, y, w, h = cv2.boundingRect(contour)
-
-            # Classify shape
             shape_type = self._classify_shape(contour, w, h)
 
             if shape_type:
-                # Extract color
                 mask = np.zeros(self.image.shape[:2], dtype=np.uint8)
                 cv2.drawContours(mask, [contour], 0, 255, -1)
-
                 mean_color = cv2.mean(self.image, mask=mask)[:3]
                 rgb = tuple(int(c) for c in reversed(mean_color))
                 hex_color = self._rgb_to_hex(rgb)
 
-                swatch = {
+                self.swatches.append({
                     'type': shape_type,
                     'x': int(x),
                     'y': int(y),
@@ -73,48 +85,27 @@ class SwatchDetector:
                     'area': int(area),
                     'color_rgb': rgb,
                     'color_hex': hex_color
-                }
+                })
 
-                self.swatches.append(swatch)
-
-        # Sort by size
         self.swatches.sort(key=lambda s: s['area'], reverse=True)
-
         return self.swatches
 
     def _classify_shape(self, contour, w, h):
         """Classify shape as circle, square, or rectangle"""
-
         epsilon = 0.02 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
         num_vertices = len(approx)
-
         area = cv2.contourArea(contour)
         perimeter = cv2.arcLength(contour, True)
-
-        if perimeter > 0:
-            circularity = 4 * np.pi * area / (perimeter ** 2)
-        else:
-            circularity = 0
-
+        circularity = 4 * np.pi * area / (perimeter ** 2) if perimeter > 0 else 0
         aspect_ratio = float(w) / h if h > 0 else 0
 
-        # Circle
         if circularity > 0.75:
             return 'circle'
-
-        # Square/Rectangle
         if num_vertices == 4:
-            if 0.85 < aspect_ratio < 1.15:
-                return 'square'
-            else:
-                return 'rectangle'
-
-        # Roughly rectangular
-        if 3 <= num_vertices <= 5:
-            if 0.5 < aspect_ratio < 2.0:
-                return 'rectangle'
-
+            return 'square' if 0.85 < aspect_ratio < 1.15 else 'rectangle'
+        if 3 <= num_vertices <= 5 and 0.5 < aspect_ratio < 2.0:
+            return 'rectangle'
         return None
 
     def _rgb_to_hex(self, rgb):
@@ -131,42 +122,27 @@ def health():
 @app.route('/api/detect-swatches', methods=['POST'])
 def detect_swatches():
     """Detect swatches in an image"""
-
     try:
-        # Get JSON data
         data = request.get_json()
-
         if not data or 'image' not in data:
-            return jsonify({
-                'success': False,
-                'error': 'No image provided'
-            }), 400
+            return jsonify({'success': False, 'error': 'No image provided'}), 400
 
         image_data = data['image']
         min_swatch_area = data.get('min_swatch_area', 5000)
 
-        # Handle data URL format
         if isinstance(image_data, str) and image_data.startswith('data:'):
             image_data = image_data.split(',')[1]
 
-        # Decode base64
         try:
             image_bytes = base64.b64decode(image_data)
             image_pil = Image.open(io.BytesIO(image_bytes))
         except Exception as e:
-            return jsonify({
-                'success': False,
-                'error': f'Invalid image format: {str(e)}'
-            }), 400
+            return jsonify({'success': False, 'error': f'Invalid image format: {str(e)}'}), 400
 
-        # Convert to OpenCV format (BGR)
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-
-        # Detect swatches
         detector = SwatchDetector(image_array, min_swatch_area=min_swatch_area)
         swatches = detector.detect_swatches()
 
-        # Format response
         response_swatches = [
             {
                 'type': s['type'],
@@ -188,11 +164,11 @@ def detect_swatches():
         }), 200
 
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': f'Processing failed: {str(e)}'
-        }), 500
+        print(f"Error in detect_swatches: {e}", file=sys.stderr)
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f'Processing failed: {str(e)}'}), 500
 
 
 if __name__ == '__main__':
+    print("Running Flask app on 0.0.0.0:8000", file=sys.stderr)
     app.run(host='0.0.0.0', port=8000, debug=False)
