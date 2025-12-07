@@ -1,10 +1,3 @@
-"""
-Flask app for swatch detection with manual CORS support
-Deployed on Render with Docker
-"""
-
-import sys
-import traceback
 from flask import Flask, request, jsonify
 import cv2
 import numpy as np
@@ -12,24 +5,10 @@ import base64
 import io
 from PIL import Image
 
-print("Starting imports...", file=sys.stderr)
-
-try:
-    import cv2
-    print("✓ cv2 imported", file=sys.stderr)
-except Exception as e:
-    print(f"✗ cv2 import failed: {e}", file=sys.stderr)
-    traceback.print_exc()
-
-print("Creating Flask app...", file=sys.stderr)
 app = Flask(__name__)
-
-print("Flask app created successfully", file=sys.stderr)
 
 
 class SwatchDetector:
-    """Detects color swatches in images"""
-
     def __init__(self, image_array, min_swatch_area=5000):
         self.image = image_array
         self.height, self.width = self.image.shape[:2]
@@ -37,7 +16,6 @@ class SwatchDetector:
         self.swatches = []
 
     def detect_swatches(self):
-        """Main detection pipeline"""
         blurred = cv2.bilateralFilter(self.image, 9, 75, 75)
         gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 150)
@@ -75,7 +53,6 @@ class SwatchDetector:
         return self.swatches
 
     def _classify_shape(self, contour, w, h):
-        """Classify shape as circle, square, or rectangle"""
         epsilon = 0.02 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
         num_vertices = len(approx)
@@ -93,11 +70,9 @@ class SwatchDetector:
         return None
 
     def _rgb_to_hex(self, rgb):
-        """Convert RGB to hex"""
         return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
 
-# Add CORS headers manually
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -108,15 +83,11 @@ def add_cors_headers(response):
 
 @app.route('/health', methods=['GET', 'OPTIONS'])
 def health():
-    """Health check endpoint"""
-    return jsonify({'status': 'ok', 'service': 'swatch-detector'})
+    return jsonify({'status': 'ok'})
 
 
 @app.route('/api/detect-swatches', methods=['POST', 'OPTIONS'])
 def detect_swatches():
-    """Detect swatches in an image"""
-    
-    # Handle preflight requests
     if request.method == 'OPTIONS':
         return '', 204
     
@@ -131,42 +102,18 @@ def detect_swatches():
         if isinstance(image_data, str) and image_data.startswith('data:'):
             image_data = image_data.split(',')[1]
 
-        try:
-            image_bytes = base64.b64decode(image_data)
-            image_pil = Image.open(io.BytesIO(image_bytes))
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'Invalid image format: {str(e)}'}), 400
-
+        image_bytes = base64.b64decode(image_data)
+        image_pil = Image.open(io.BytesIO(image_bytes))
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-        detector = SwatchDetector(image_array, min_swatch_area=min_swatch_area)
+        
+        detector = SwatchDetector(image_array, min_swatch_area)
         swatches = detector.detect_swatches()
-
-        response_swatches = [
-            {
-                'type': s['type'],
-                'x': s['x'],
-                'y': s['y'],
-                'width': s['width'],
-                'height': s['height'],
-                'color_hex': s['color_hex'],
-                'color_rgb': s['color_rgb'],
-                'area': s['area']
-            }
-            for s in swatches
-        ]
 
         return jsonify({
             'success': True,
-            'swatches': response_swatches,
-            'count': len(response_swatches)
+            'swatches': swatches,
+            'count': len(swatches)
         }), 200
 
     except Exception as e:
-        print(f"Error in detect_swatches: {e}", file=sys.stderr)
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': f'Processing failed: {str(e)}'}), 500
-
-
-if __name__ == '__main__':
-    print("Running Flask app on 0.0.0.0:8000", file=sys.stderr)
-    app.run(host='0.0.0.0', port=8000, debug=False)
+        return jsonify({'success': False, 'error': str(e)}), 500
