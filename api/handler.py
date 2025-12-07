@@ -9,176 +9,195 @@ app = Flask(__name__)
 
 
 class SwatchDetector:
-    def __init__(self, image_array, min_swatch_area=1000):
+    def __init__(self, image_array, min_swatch_area=1500):
         self.image = image_array
         self.height, self.width = self.image.shape[:2]
         self.min_swatch_area = min_swatch_area
         self.swatches = []
 
     def detect_swatches(self):
-        # Method 1: Contour-based detection (for explicit color blocks)
-        swatches_contour = self._detect_by_contours()
+        """
+        Simple approach: Find contiguous regions of uniform color.
+        A swatch is simply a region where all pixels are roughly the same color.
+        """
+        # Use flood fill to find uniform color regions
+        swatches = self._find_by_flood_fill()
         
-        # Method 2: Color clustering (for regions of similar color)
-        swatches_cluster = self._detect_by_clustering()
+        # Remove duplicates (same color in same region)
+        swatches = self._remove_near_duplicates(swatches)
         
-        # Merge and deduplicate
-        all_swatches = swatches_contour + swatches_cluster
-        self.swatches = self._deduplicate_swatches(all_swatches)
+        self.swatches = swatches
         self.swatches.sort(key=lambda s: s['area'], reverse=True)
         
         return self.swatches
 
-    def _detect_by_contours(self):
-        """Detect swatches using edge detection and contours"""
-        blurred = cv2.bilateralFilter(self.image, 9, 75, 75)
-        gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        dilated = cv2.dilate(edges, kernel, iterations=2)
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        swatches = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < self.min_swatch_area or area > self.width * self.height * 0.7:
-                continue
-
-            x, y, w, h = cv2.boundingRect(contour)
-            
-            # Check if the region inside the contour is uniform color
-            if self._is_uniform_color(x, y, w, h, threshold=30):
-                shape_type = self._classify_shape(contour, w, h)
-                if shape_type:
-                    rgb = self._get_average_color(x, y, w, h)
-                    hex_color = self._rgb_to_hex(rgb)
-                    
-                    swatches.append({
-                        'type': shape_type,
-                        'x': int(x),
-                        'y': int(y),
-                        'width': int(w),
-                        'height': int(h),
-                        'area': int(area),
-                        'color_rgb': rgb,
-                        'color_hex': hex_color
-                    })
-        
-        return swatches
-
-    def _detect_by_clustering(self):
-        """Detect swatches using K-means color clustering"""
-        # Reshape image for clustering
-        pixels = self.image.reshape((-1, 3))
-        pixels = np.float32(pixels)
-        
-        # K-means clustering
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-        k = 8  # Number of color clusters
-        _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-        
-        # Reshape labels back to image
-        labels = labels.reshape((self.height, self.width))
-        centers = np.uint8(centers)
-        
+    def _find_by_flood_fill(self):
+        """Find uniform color regions using flood fill algorithm"""
+        visited = np.zeros((self.height, self.width), dtype=bool)
         swatches = []
         
-        # For each cluster, find contours
-        for cluster_id in range(k):
-            # Create binary mask for this cluster
-            mask = (labels == cluster_id).astype(np.uint8) * 255
-            
-            # Find contours in this cluster
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area < self.min_swatch_area or area > self.width * self.height * 0.7:
+        # Scan image systematically
+        for y in range(0, self.height, 5):  # Sample every 5 pixels for speed
+            for x in range(0, self.width, 5):
+                if visited[y, x]:
                     continue
                 
-                x, y, w, h = cv2.boundingRect(contour)
-                shape_type = self._classify_shape(contour, w, h)
+                # Try flood fill from this point
+                seed_color = self.image[y, x]
+                mask = self._flood_fill(seed_color, threshold=25)
                 
-                if shape_type:
-                    color = centers[cluster_id]
-                    rgb = tuple(int(c) for c in reversed(color))
-                    hex_color = self._rgb_to_hex(rgb)
-                    
-                    swatches.append({
-                        'type': shape_type,
-                        'x': int(x),
-                        'y': int(y),
-                        'width': int(w),
-                        'height': int(h),
-                        'area': int(area),
-                        'color_rgb': rgb,
-                        'color_hex': hex_color
-                    })
+                if mask is None:
+                    visited[y, x] = True
+                    continue
+                
+                visited[mask] = True
+                
+                # Get region bounds
+                coords = np.argwhere(mask)
+                if len(coords) < self.min_swatch_area:
+                    continue
+                
+                y_min, x_min = coords.min(axis=0)
+                y_max, x_max = coords.max(axis=0)
+                w = x_max - x_min + 1
+                h = y_max - y_min + 1
+                area = len(coords)
+                
+                # Skip if too large (probably not a swatch)
+                if area > self.width * self.height * 0.4:
+                    continue
+                
+                # Get average color
+                region_pixels = self.image[mask]
+                avg_color = np.mean(region_pixels, axis=0)
+                rgb = tuple(int(c) for c in reversed(avg_color))
+                hex_color = self._rgb_to_hex(rgb)
+                
+                # Classify shape
+                shape_type = self._classify_region_shape(mask, w, h)
+                
+                swatch = {
+                    'type': shape_type,
+                    'x': int(x_min),
+                    'y': int(y_min),
+                    'width': int(w),
+                    'height': int(h),
+                    'area': int(area),
+                    'color_rgb': rgb,
+                    'color_hex': hex_color,
+                    'mask': mask
+                }
+                swatches.append(swatch)
         
         return swatches
 
-    def _is_uniform_color(self, x, y, w, h, threshold=30):
-        """Check if a region has uniform color"""
-        region = self.image[y:y+h, x:x+w]
-        if region.size == 0:
-            return False
+    def _flood_fill(self, seed_color, threshold=25):
+        """
+        Flood fill from a seed point to find connected uniform color region.
+        Returns a boolean mask of the filled region.
+        """
+        visited = np.zeros((self.height, self.width), dtype=bool)
+        mask = np.zeros((self.height, self.width), dtype=bool)
         
-        # Calculate standard deviation for each channel
-        std_dev = np.std(region, axis=(0, 1))
+        # Find seed points (pixels similar to seed color)
+        color_diff = np.sum(np.abs(self.image.astype(float) - seed_color.astype(float)), axis=2)
+        seed_points = np.argwhere(color_diff < threshold)
         
-        # If all channels have low std dev, it's uniform
-        return np.all(std_dev < threshold)
+        if len(seed_points) < 10:
+            return None
+        
+        # Flood fill using BFS
+        from collections import deque
+        queue = deque(seed_points[:100])  # Start with first 100 similar pixels
+        
+        while queue:
+            y, x = queue.popleft()
+            
+            if y < 0 or y >= self.height or x < 0 or x >= self.width:
+                continue
+            if visited[y, x]:
+                continue
+            
+            pixel_color = self.image[y, x]
+            diff = np.sum(np.abs(pixel_color.astype(float) - seed_color.astype(float)))
+            
+            if diff > threshold:
+                continue
+            
+            visited[y, x] = True
+            mask[y, x] = True
+            
+            # Add neighbors to queue
+            for dy, dx in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < self.height and 0 <= nx < self.width and not visited[ny, nx]:
+                    queue.append((ny, nx))
+        
+        area = np.count_nonzero(mask)
+        if area < self.min_swatch_area:
+            return None
+        
+        return mask
 
-    def _get_average_color(self, x, y, w, h):
-        """Get average color in a region"""
-        region = self.image[y:y+h, x:x+w]
-        mean_color = np.mean(region, axis=(0, 1))
-        rgb = tuple(int(c) for c in reversed(mean_color))
-        return rgb
-
-    def _classify_shape(self, contour, w, h):
-        """Classify shape as circle, square, or rectangle"""
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        num_vertices = len(approx)
-        area = cv2.contourArea(contour)
-        perimeter = cv2.arcLength(contour, True)
-        circularity = 4 * np.pi * area / (perimeter ** 2) if perimeter > 0 else 0
-        aspect_ratio = float(w) / h if h > 0 else 0
-
+    def _classify_region_shape(self, mask, w, h):
+        """Classify shape of the region"""
+        area = np.count_nonzero(mask)
+        perimeter = self._estimate_perimeter(mask)
+        
+        if perimeter == 0:
+            return 'rectangle'
+        
+        # Circularity
+        circularity = 4 * np.pi * area / (perimeter ** 2)
+        aspect_ratio = w / h if h > 0 else 1
+        
         if circularity > 0.75:
             return 'circle'
-        if num_vertices == 4:
-            return 'square' if 0.7 < aspect_ratio < 1.3 else 'rectangle'
-        if 3 <= num_vertices <= 5:
-            if aspect_ratio > 0.3:  # More lenient for tall rectangles
-                return 'rectangle'
-        return None
+        elif 0.7 < aspect_ratio < 1.3:
+            return 'square'
+        else:
+            return 'rectangle'
 
-    def _deduplicate_swatches(self, swatches):
-        """Remove duplicate swatches (same color, overlapping regions)"""
+    def _estimate_perimeter(self, mask):
+        """Estimate perimeter of a region"""
+        # Count edges
+        edges = 0
+        for y in range(self.height - 1):
+            for x in range(self.width - 1):
+                if mask[y, x] != mask[y, x + 1]:
+                    edges += 1
+                if mask[y, x] != mask[y + 1, x]:
+                    edges += 1
+        return edges / 2
+
+    def _remove_near_duplicates(self, swatches):
+        """Remove swatches that are very similar in color and location"""
         if not swatches:
             return []
         
-        unique_swatches = []
+        unique = []
         for swatch in swatches:
-            # Check if this swatch is too similar to an existing one
             is_duplicate = False
-            for existing in unique_swatches:
+            
+            for existing in unique:
                 # Same color?
                 color_diff = sum(abs(a - b) for a, b in zip(swatch['color_rgb'], existing['color_rgb']))
-                # Overlapping region?
-                x_overlap = not (swatch['x'] + swatch['width'] < existing['x'] or swatch['x'] > existing['x'] + existing['width'])
-                y_overlap = not (swatch['y'] + swatch['height'] < existing['y'] or swatch['y'] > existing['y'] + existing['height'])
                 
-                if color_diff < 50 and x_overlap and y_overlap:
+                # Same location? (overlapping)
+                x1, y1, w1, h1 = swatch['x'], swatch['y'], swatch['width'], swatch['height']
+                x2, y2, w2, h2 = existing['x'], existing['y'], existing['width'], existing['height']
+                
+                x_overlap = not (x1 + w1 < x2 or x1 > x2 + w2)
+                y_overlap = not (y1 + h1 < y2 or y1 > y2 + h2)
+                
+                if color_diff < 30 and x_overlap and y_overlap:
                     is_duplicate = True
                     break
             
             if not is_duplicate:
-                unique_swatches.append(swatch)
+                unique.append(swatch)
         
-        return unique_swatches
+        return unique
 
     def _rgb_to_hex(self, rgb):
         return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
@@ -208,7 +227,7 @@ def detect_swatches():
             return jsonify({'success': False, 'error': 'No image provided'}), 400
 
         image_data = data['image']
-        min_swatch_area = data.get('min_swatch_area', 1000)
+        min_swatch_area = data.get('min_swatch_area', 1500)
 
         if isinstance(image_data, str) and image_data.startswith('data:'):
             image_data = image_data.split(',')[1]
@@ -219,6 +238,11 @@ def detect_swatches():
         
         detector = SwatchDetector(image_array, min_swatch_area)
         swatches = detector.detect_swatches()
+
+        # Remove mask from response (for JSON serialization)
+        for swatch in swatches:
+            if 'mask' in swatch:
+                del swatch['mask']
 
         return jsonify({
             'success': True,
