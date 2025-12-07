@@ -1,15 +1,14 @@
 """
-Vercel serverless function for swatch detection
-This is the correct format for Vercel's serverless functions
+Flask app for swatch detection
+Deployed on Render with Docker
 """
 
-from flask import Flask, Request, Response
+from flask import Flask, request, jsonify
 import cv2
 import numpy as np
 import base64
 import io
 from PIL import Image
-import json
 
 app = Flask(__name__)
 
@@ -123,21 +122,25 @@ class SwatchDetector:
         return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
 
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({'status': 'ok', 'service': 'swatch-detector'})
+
+
 @app.route('/api/detect-swatches', methods=['POST'])
 def detect_swatches():
     """Detect swatches in an image"""
 
     try:
         # Get JSON data
-        data = None
-        if request.is_json:
-            data = request.get_json()
+        data = request.get_json()
 
         if not data or 'image' not in data:
-            return {
+            return jsonify({
                 'success': False,
                 'error': 'No image provided'
-            }, 400
+            }), 400
 
         image_data = data['image']
         min_swatch_area = data.get('min_swatch_area', 5000)
@@ -151,10 +154,10 @@ def detect_swatches():
             image_bytes = base64.b64decode(image_data)
             image_pil = Image.open(io.BytesIO(image_bytes))
         except Exception as e:
-            return {
+            return jsonify({
                 'success': False,
                 'error': f'Invalid image format: {str(e)}'
-            }, 400
+            }), 400
 
         # Convert to OpenCV format (BGR)
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
@@ -178,20 +181,18 @@ def detect_swatches():
             for s in swatches
         ]
 
-        return {
+        return jsonify({
             'success': True,
             'swatches': response_swatches,
             'count': len(response_swatches)
-        }, 200
+        }), 200
 
     except Exception as e:
-        return {
+        return jsonify({
             'success': False,
             'error': f'Processing failed: {str(e)}'
-        }, 500
+        }), 500
 
 
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check"""
-    return {'status': 'ok', 'service': 'swatch-detector'}, 200
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)
