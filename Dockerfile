@@ -1,4 +1,3 @@
-```dockerfile
 FROM python:3.11-slim
 
 # Install system dependencies for OpenCV
@@ -20,4 +19,3 @@ COPY . .
 EXPOSE 8000
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "api.handler:app"]
-```
