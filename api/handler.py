@@ -1,12 +1,11 @@
 """
-Flask app for swatch detection with CORS support
+Flask app for swatch detection with manual CORS support
 Deployed on Render with Docker
 """
 
 import sys
 import traceback
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import cv2
 import numpy as np
 import base64
@@ -14,12 +13,6 @@ import io
 from PIL import Image
 
 print("Starting imports...", file=sys.stderr)
-
-try:
-    print("✓ Flask imported", file=sys.stderr)
-except Exception as e:
-    print(f"✗ Flask import failed: {e}", file=sys.stderr)
-    traceback.print_exc()
 
 try:
     import cv2
@@ -31,20 +24,7 @@ except Exception as e:
 print("Creating Flask app...", file=sys.stderr)
 app = Flask(__name__)
 
-# Enable CORS for all routes
-CORS(app, resources={
-    r"/api/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
-    },
-    r"/health": {
-        "origins": "*",
-        "methods": ["GET", "OPTIONS"]
-    }
-})
-
-print("Flask app created successfully with CORS enabled", file=sys.stderr)
+print("Flask app created successfully", file=sys.stderr)
 
 
 class SwatchDetector:
@@ -115,6 +95,15 @@ class SwatchDetector:
     def _rgb_to_hex(self, rgb):
         """Convert RGB to hex"""
         return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
+
+
+# Add CORS headers manually
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 
 @app.route('/health', methods=['GET', 'OPTIONS'])
