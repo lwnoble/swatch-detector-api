@@ -1,15 +1,21 @@
 """
-Flask app for swatch detection
+Flask app for swatch detection with CORS support
 Deployed on Render with Docker
 """
 
 import sys
 import traceback
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import cv2
+import numpy as np
+import base64
+import io
+from PIL import Image
 
 print("Starting imports...", file=sys.stderr)
 
 try:
-    from flask import Flask, request, jsonify
     print("✓ Flask imported", file=sys.stderr)
 except Exception as e:
     print(f"✗ Flask import failed: {e}", file=sys.stderr)
@@ -22,25 +28,23 @@ except Exception as e:
     print(f"✗ cv2 import failed: {e}", file=sys.stderr)
     traceback.print_exc()
 
-try:
-    import numpy as np
-    print("✓ numpy imported", file=sys.stderr)
-except Exception as e:
-    print(f"✗ numpy import failed: {e}", file=sys.stderr)
-    traceback.print_exc()
-
-try:
-    import base64
-    import io
-    from PIL import Image
-    print("✓ All other imports successful", file=sys.stderr)
-except Exception as e:
-    print(f"✗ Other imports failed: {e}", file=sys.stderr)
-    traceback.print_exc()
-
 print("Creating Flask app...", file=sys.stderr)
 app = Flask(__name__)
-print("Flask app created successfully", file=sys.stderr)
+
+# Enable CORS for all routes
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    },
+    r"/health": {
+        "origins": "*",
+        "methods": ["GET", "OPTIONS"]
+    }
+})
+
+print("Flask app created successfully with CORS enabled", file=sys.stderr)
 
 
 class SwatchDetector:
@@ -113,15 +117,20 @@ class SwatchDetector:
         return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
 
-@app.route('/health', methods=['GET'])
+@app.route('/health', methods=['GET', 'OPTIONS'])
 def health():
     """Health check endpoint"""
     return jsonify({'status': 'ok', 'service': 'swatch-detector'})
 
 
-@app.route('/api/detect-swatches', methods=['POST'])
+@app.route('/api/detect-swatches', methods=['POST', 'OPTIONS'])
 def detect_swatches():
     """Detect swatches in an image"""
+    
+    # Handle preflight requests
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     try:
         data = request.get_json()
         if not data or 'image' not in data:
