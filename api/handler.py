@@ -3,14 +3,13 @@ import cv2
 import numpy as np
 import base64
 import io
-from PIL import Image
+from PIL import Image as PILImage
 
 app = Flask(__name__)
 
 class SwatchDetector:
     def __init__(self, image, min_area=400):
         self.image = image
-        self.original = image.copy()
         self.height, self.width = image.shape[:2]
         self.min_area = min_area
 
@@ -33,13 +32,9 @@ class SwatchDetector:
             if area < self.min_area or area > self.width * self.height * 0.4:
                 continue
             x, y, w, h = cv2.boundingRect(contour)
-            
-            # Get color from ORIGINAL image (not reduced/quantized)
-            region = self.original[y:y+h, x:x+w]
+            region = self.image[y:y+h, x:x+w]
             if region.size == 0:
                 continue
-            
-            # Sample center pixel for vibrant color
             center_y, center_x = h // 2, w // 2
             if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
                 color = region[center_y, center_x]
@@ -47,7 +42,6 @@ class SwatchDetector:
             else:
                 avg = np.mean(region, axis=(0, 1))
                 rgb = tuple(int(c) for c in reversed(avg))
-            
             hex_color = '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
             shape = self._get_shape(contour, w, h)
             if not shape:
@@ -96,7 +90,7 @@ def detect_swatches():
         if isinstance(image_data, str) and image_data.startswith('data:'):
             image_data = image_data.split(',')[1]
         image_bytes = base64.b64decode(image_data)
-        image_pil = Image.open(io.BytesIO(image_bytes))
+        image_pil = PILImage.open(io.BytesIO(image_bytes))
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         detector = SwatchDetector(image_array, min_area)
         swatches = detector.detect()
