@@ -15,67 +15,58 @@ class SwatchDetector:
         self.min_area = min_area
 
     def detect(self):
-        """Primary detection: find explicit color swatches"""
-        try:
-            pixels = self.image.reshape((-1, 3))
-            pixels = np.float32(pixels)
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            _, labels, centers = cv2.kmeans(pixels, 20, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-            centers = np.uint8(centers)
-            reduced = centers[labels.flatten()].reshape(self.image.shape)
-            gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            swatches = []
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area < self.min_area or area > self.width * self.height * 0.4:
-                    continue
-                x, y, w, h = cv2.boundingRect(contour)
-                if w == 0 or h == 0:
-                    continue
-                region = self.image[y:y+h, x:x+w]
-                if region.size == 0:
-                    continue
-                center_y, center_x = h // 2, w // 2
-                if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
-                    color = region[center_y, center_x]
-                    rgb = tuple(int(c) for c in reversed(color))
-                else:
-                    avg = np.mean(region, axis=(0, 1))
-                    rgb = tuple(int(c) for c in reversed(avg))
-                hex_color = '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
-                shape = self._get_shape(contour, w, h)
-                if not shape:
-                    continue
-                swatches.append({
-                    'type': 'swatch',
-                    'shape': shape,
-                    'x': int(x),
-                    'y': int(y),
-                    'width': int(w),
-                    'height': int(h),
-                    'area': int(area),
-                    'color_rgb': rgb,
-                    'color_hex': hex_color
-                })
-            
-            # Fallback: if we found less than 3 swatches, extract dominant colors
-            if len(swatches) < 3:
-                try:
-                    dominant_colors = self.extract_dominant_colors(10 - len(swatches))
-                    swatches.extend(dominant_colors)
-                except Exception as e:
-                    print(f"Warning: Could not extract dominant colors: {e}")
-            
-            return swatches
-        except Exception as e:
-            print(f"Error in detect(): {e}")
-            traceback.print_exc()
-            raise
+        pixels = self.image.reshape((-1, 3))
+        pixels = np.float32(pixels)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(pixels, 20, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+        centers = np.uint8(centers)
+        reduced = centers[labels.flatten()].reshape(self.image.shape)
+        gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        swatches = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < self.min_area or area > self.width * self.height * 0.4:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            region = self.image[y:y+h, x:x+w]
+            if region.size == 0:
+                continue
+            center_y, center_x = h // 2, w // 2
+            if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
+                color = region[center_y, center_x]
+                rgb = tuple(int(c) for c in reversed(color))
+            else:
+                avg = np.mean(region, axis=(0, 1))
+                rgb = tuple(int(c) for c in reversed(avg))
+            hex_color = '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
+            shape = self._get_shape(contour, w, h)
+            if not shape:
+                continue
+            swatches.append({
+                'type': 'swatch',
+                'x': int(x),
+                'y': int(y),
+                'width': int(w),
+                'height': int(h),
+                'area': int(area),
+                'color_rgb': rgb,
+                'color_hex': hex_color
+            })
+        
+        # Fallback: if we found less than 3 swatches, extract dominant colors
+        if len(swatches) < 3:
+            try:
+                dominant_colors = self.extract_dominant_colors(10 - len(swatches))
+                swatches.extend(dominant_colors)
+            except Exception as e:
+                print(f"Warning: Could not extract dominant colors: {e}")
+        
+        return swatches
 
     def extract_dominant_colors(self, num_colors=10):
         """Extract the most common colors from the image (fallback method)"""
@@ -117,7 +108,6 @@ class SwatchDetector:
                 if not is_duplicate and len(swatches) < num_colors:
                     swatches.append({
                         'type': 'palette',
-                        'shape': 'palette',
                         'x': 0,
                         'y': 0,
                         'width': 0,
@@ -136,22 +126,19 @@ class SwatchDetector:
     def _get_shape(self, contour, w, h):
         if w == 0 or h == 0:
             return None
-        try:
-            epsilon = 0.02 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            area = cv2.contourArea(contour)
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
-                return 'rectangle'
-            circularity = 4 * np.pi * area / (perimeter ** 2)
-            aspect = w / h if h > 0 else 1
-            if circularity > 0.75:
-                return 'circle'
-            if 0.75 < aspect < 1.25:
-                return 'square'
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
             return 'rectangle'
-        except:
-            return 'rectangle'
+        circularity = 4 * np.pi * area / (perimeter ** 2)
+        aspect = w / h if h > 0 else 1
+        if circularity > 0.75:
+            return 'circle'
+        if 0.75 < aspect < 1.25:
+            return 'square'
+        return 'rectangle'
 
 @app.after_request
 def cors(response):
