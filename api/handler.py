@@ -71,13 +71,21 @@ class SwatchDetector:
             
             x, y, w, h = cv2.boundingRect(contour)
             
-            # Get actual color from original image
+            # Get actual color from original image - sample center for vibrant colors
             region = self.image[y:y+h, x:x+w]
             if region.size == 0:
                 continue
             
-            avg_color = np.mean(region, axis=(0, 1))
-            rgb = tuple(int(c) for c in reversed(avg_color))
+            # Sample center pixel for most vibrant color
+            center_y, center_x = h // 2, w // 2
+            if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
+                center_color = region[center_y, center_x]
+                rgb = tuple(int(c) for c in reversed(center_color))
+            else:
+                # Fallback to mean if center sampling fails
+                avg_color = np.mean(region, axis=(0, 1))
+                rgb = tuple(int(c) for c in reversed(avg_color))
+            
             hex_color = self._rgb_to_hex(rgb)
             
             shape_type = self._classify_shape(contour, w, h)
@@ -145,8 +153,15 @@ class SwatchDetector:
                 if region.size == 0:
                     continue
                 
-                avg_color = np.mean(region, axis=(0, 1))
-                rgb = tuple(int(c) for c in reversed(avg_color))
+                # Sample center pixel for vibrant colors
+                center_y, center_x = h // 2, w // 2
+                if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
+                    center_color = region[center_y, center_x]
+                    rgb = tuple(int(c) for c in reversed(center_color))
+                else:
+                    avg_color = np.mean(region, axis=(0, 1))
+                    rgb = tuple(int(c) for c in reversed(avg_color))
+                
                 hex_color = self._rgb_to_hex(rgb)
                 
                 shape_type = self._classify_shape(contour, w, h)
