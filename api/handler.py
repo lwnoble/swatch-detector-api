@@ -121,7 +121,7 @@ class SwatchDetector:
         for region in regions:
             # Swatches should be:
             # 1. Relatively uniform color
-            if region['uniformity'] < 50:
+            if region['uniformity'] < 30:
                 continue
             
             # 2. Not too small, not too large
