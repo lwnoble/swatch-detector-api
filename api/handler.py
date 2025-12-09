@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import base64
 import io
-from PIL import Image as PILImage
+from PIL import Image
 
 app = Flask(__name__)
 
@@ -90,7 +90,7 @@ def detect_swatches():
         if isinstance(image_data, str) and image_data.startswith('data:'):
             image_data = image_data.split(',')[1]
         image_bytes = base64.b64decode(image_data)
-        image_pil = PILImage.open(io.BytesIO(image_bytes))
+        image_pil = Image.open(io.BytesIO(image_bytes))
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         detector = SwatchDetector(image_array, min_area)
         swatches = detector.detect()
