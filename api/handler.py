@@ -37,8 +37,8 @@ class SwatchDetector:
         for swatch in filtered_swatches:
             swatch['type'] = 'swatch'
         
-        # If we have less than 3 swatches, add palette colors
-        if len(filtered_swatches) < 3:
+        # Always add palette colors to reach 10 total
+        if len(filtered_swatches) < 10:
             palette_colors = self._extract_dominant_colors(10 - len(filtered_swatches))
             filtered_swatches.extend(palette_colors)
         
@@ -280,12 +280,12 @@ class SwatchDetector:
             small_width = int(self.width * scale)
             small_image = cv2.resize(self.image, (small_width, small_height))
             
-            # K-means clustering
+            # K-means clustering - search through many clusters to find diverse colors
             pixels = small_image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            num_clusters = min(num_colors + 5, 50)
+            num_clusters = min(num_colors * 3, 80)  # Search through more clusters for diversity
             _, labels, centers = cv2.kmeans(pixels, num_clusters, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
             
             centers = np.uint8(centers)
@@ -293,7 +293,7 @@ class SwatchDetector:
             sorted_indices = np.argsort(-label_counts)
             
             swatches = []
-            for center_idx in sorted_indices[:num_clusters]:
+            for center_idx in sorted_indices:
                 bgr_color = centers[center_idx]
                 rgb = tuple(int(c) for c in reversed(bgr_color))
                 
@@ -303,7 +303,7 @@ class SwatchDetector:
                 
                 hex_color = self._rgb_to_hex(rgb)
                 
-                # Avoid duplicate colors
+                # Avoid duplicate colors (within palette only, not swatches)
                 is_duplicate = False
                 for existing in swatches:
                     color_diff = sum(abs(int(a) - int(b)) for a, b in zip(rgb, existing['color_rgb']))
@@ -322,6 +322,9 @@ class SwatchDetector:
                         'color_rgb': rgb,
                         'color_hex': hex_color
                     })
+                
+                if len(swatches) >= num_colors:
+                    break
             
             return swatches
         except Exception as e:
