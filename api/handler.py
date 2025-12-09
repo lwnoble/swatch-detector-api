@@ -10,21 +10,16 @@ app = Flask(__name__)
 class SwatchDetector:
     def __init__(self, image, min_area=400):
         self.image = image
-        self.original_image = image.copy()
         self.height, self.width = image.shape[:2]
         self.min_area = min_area
 
     def detect(self):
-        # Use original image colors, but quantize for detection only
         pixels = self.image.reshape((-1, 3))
         pixels = np.float32(pixels)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-        _, labels, centers = cv2.kmeans(pixels, 25, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-        
-        # Use quantized for detection
+        _, labels, centers = cv2.kmeans(pixels, 20, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
         centers = np.uint8(centers)
         reduced = centers[labels.flatten()].reshape(self.image.shape)
-        
         gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -36,40 +31,22 @@ class SwatchDetector:
             area = cv2.contourArea(contour)
             if area < self.min_area or area > self.width * self.height * 0.4:
                 continue
-            
             x, y, w, h = cv2.boundingRect(contour)
-            
-            # Sample from ORIGINAL image, not quantized
-            region = self.original_image[y:y+h, x:x+w]
+            region = self.image[y:y+h, x:x+w]
             if region.size == 0:
                 continue
-            
-            # Get color from center pixel of original image
             center_y, center_x = h // 2, w // 2
             if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
                 color = region[center_y, center_x]
                 rgb = tuple(int(c) for c in reversed(color))
             else:
-                # Fallback to mean of original
                 avg = np.mean(region, axis=(0, 1))
                 rgb = tuple(int(c) for c in reversed(avg))
-            
             hex_color = '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
             shape = self._get_shape(contour, w, h)
             if not shape:
                 continue
-            
-            swatches.append({
-                'type': shape,
-                'x': int(x),
-                'y': int(y),
-                'width': int(w),
-                'height': int(h),
-                'area': int(area),
-                'color_rgb': rgb,
-                'color_hex': hex_color
-            })
-        
+            swatches.append({'type': shape, 'x': int(x), 'y': int(y), 'width': int(w), 'height': int(h), 'area': int(area), 'color_rgb': rgb, 'color_hex': hex_color})
         return swatches
 
     def _get_shape(self, contour, w, h):
@@ -108,20 +85,15 @@ def detect_swatches():
         data = request.get_json()
         if not data or 'image' not in data:
             return jsonify({'success': False, 'error': 'No image'}), 400
-        
         image_data = data['image']
         min_area = data.get('min_swatch_area', 400)
-        
         if isinstance(image_data, str) and image_data.startswith('data:'):
             image_data = image_data.split(',')[1]
-        
         image_bytes = base64.b64decode(image_data)
         image_pil = Image.open(io.BytesIO(image_bytes))
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-        
         detector = SwatchDetector(image_array, min_area)
         swatches = detector.detect()
-        
         return jsonify({'success': True, 'swatches': swatches, 'count': len(swatches)})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
