@@ -372,31 +372,52 @@ def detect_swatches():
         return '', 204
     
     try:
+        print('📡 [API] Received detect-swatches request')
         data = request.get_json()
+        print(f'📊 [API] Request data keys: {list(data.keys()) if data else None}')
+        
         if not data or 'image' not in data:
+            print('❌ [API] No image in request')
             return jsonify({'success': False, 'error': 'No image provided'}), 400
 
         image_data = data['image']
+        print(f'📸 [API] Image data length: {len(image_data)} chars')
+        
         min_swatch_area = data.get('min_swatch_area', 400)
 
         if isinstance(image_data, str) and image_data.startswith('data:'):
+            print('✂️ [API] Stripping data: prefix')
             image_data = image_data.split(',')[1]
 
+        print('🔄 [API] Decoding base64...')
         image_bytes = base64.b64decode(image_data)
-        image_pil = Image.open(io.BytesIO(image_bytes))
-        image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+        print(f'✅ [API] Decoded {len(image_bytes)} bytes')
         
+        print('📖 [API] Loading image with PIL...')
+        image_pil = Image.open(io.BytesIO(image_bytes))
+        print(f'📐 [API] Image size: {image_pil.size}')
+        
+        print('🎨 [API] Converting to OpenCV format...')
+        image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+        print(f'✅ [API] Image array shape: {image_array.shape}')
+        
+        print('🔍 [API] Creating SwatchDetector...')
         detector = SwatchDetector(image_array, min_swatch_area)
+        
+        print('🔎 [API] Running detect()...')
         swatches = detector.detect()
+        print(f'✅ [API] Detection complete! Found {len(swatches)} colors')
 
-        return jsonify({
+        response = {
             'success': True,
             'swatches': swatches,
             'count': len(swatches)
-        }), 200
+        }
+        print(f'📤 [API] Returning response with {len(swatches)} swatches')
+        return jsonify(response), 200
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ [API] Error: {e}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
