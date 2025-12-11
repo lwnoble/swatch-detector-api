@@ -4,7 +4,6 @@ import numpy as np
 import base64
 import io
 from PIL import Image
-import traceback
 
 app = Flask(__name__)
 
@@ -16,16 +15,16 @@ class SwatchDetector:
         self.min_swatch_area = min_swatch_area
         self.swatches = []
 
-    def detect(self):
+    def detect_swatches(self):
         """Detect swatches using multiple strategies"""
         all_swatches = []
         
-        # Strategy 1: Find uniform color blocks across entire image
+        # Strategy 1: Find uniform color blocks
         swatches_1 = self._find_uniform_blocks()
         all_swatches.extend(swatches_1)
         
-        # Strategy 2: Check all edges and corners (left, right, top, bottom, corners)
-        swatches_2 = self._find_edge_swatches()
+        # Strategy 2: Look for organized color regions (grids/rows)
+        swatches_2 = self._find_organized_colors()
         all_swatches.extend(swatches_2)
         
         # Remove duplicates
@@ -34,31 +33,17 @@ class SwatchDetector:
         # Filter out white colors
         filtered_swatches = [s for s in unique_swatches if not self._is_white(s['color_rgb'])]
         
-        # Separate swatches and palette
-        detected_swatches = [s for s in filtered_swatches if s['type'] == 'swatch']
+        # Mark all detected swatches with type='swatch'
+        for swatch in filtered_swatches:
+            swatch['type'] = 'swatch'
         
-        # If we found actual swatches, limit to 6
-        if detected_swatches:
-            detected_swatches = detected_swatches[:6]
-            # Extract palette colors and filter to avoid duplicates with swatches
-            all_palette = self._extract_dominant_colors(100)
-            filtered_palette = []
-            for palette_color in all_palette:
-                is_duplicate = False
-                for swatch in detected_swatches:
-                    color_diff = sum(abs(int(a) - int(b)) for a, b in zip(palette_color['color_rgb'], swatch['color_rgb']))
-                    if color_diff < 50:
-                        is_duplicate = True
-                        break
-                if not is_duplicate:
-                    filtered_palette.append(palette_color)
-            filtered_palette = filtered_palette[:48]
-            all_colors = detected_swatches + filtered_palette
-        else:
-            # No swatches found - get 54 dominant colors instead (6 + 48)
-            all_colors = self._extract_dominant_colors(54)
+        # Always add palette colors to reach 10 total
+        if len(filtered_swatches) < 10:
+            palette_colors = self._extract_dominant_colors(10 - len(filtered_swatches))
+            filtered_swatches.extend(palette_colors)
         
-        self.swatches = all_colors
+        # Limit to 10 colors max
+        self.swatches = filtered_swatches[:10]
         self.swatches.sort(key=lambda s: s['area'], reverse=True)
         
         return self.swatches
@@ -121,7 +106,7 @@ class SwatchDetector:
                 continue
             
             swatch = {
-                'type': 'swatch',
+                'type': shape_type,
                 'x': int(x),
                 'y': int(y),
                 'width': int(w),
@@ -134,87 +119,79 @@ class SwatchDetector:
         
         return swatches
 
-    def _find_edge_swatches(self):
-        """Find swatches on all edges: left, right, top, bottom, corners"""
+    def _find_organized_colors(self):
+        """Look specifically for swatches in bottom/side regions of image"""
         swatches = []
         
-        # Define edge regions (each 25% of the image)
-        edges = {
-            'left': (0, 0, int(self.width * 0.25), self.height),
-            'right': (int(self.width * 0.75), 0, self.width, self.height),
-            'top': (0, 0, self.width, int(self.height * 0.25)),
-            'bottom': (0, int(self.height * 0.75), self.width, self.height),
-        }
+        # Check bottom 30% of image (common swatch location)
+        bottom_y = int(self.height * 0.7)
+        bottom_region = self.image[bottom_y:, :]
         
-        for edge_name, (x1, y1, x2, y2) in edges.items():
-            edge_region = self.image[y1:y2, x1:x2]
+        # K-means on bottom region
+        pixels = bottom_region.reshape((-1, 3))
+        pixels = np.float32(pixels)
+        
+        if len(pixels) < 100:
+            return swatches
+        
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        try:
+            _, labels, centers = cv2.kmeans(pixels, 15, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+        except:
+            return swatches
+        
+        centers = np.uint8(centers)
+        
+        # For each color cluster, find connected regions
+        for cluster_id in range(len(centers)):
+            cluster_mask = (labels.reshape(bottom_region.shape[:2]) == cluster_id).astype(np.uint8)
             
-            if edge_region.size < 100:
-                continue
+            # Find contours in this cluster
+            contours, _ = cv2.findContours(cluster_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # K-means on edge region
-            pixels = edge_region.reshape((-1, 3))
-            pixels = np.float32(pixels)
-            
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            try:
-                _, labels, centers = cv2.kmeans(pixels, 12, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-            except:
-                continue
-            
-            centers = np.uint8(centers)
-            
-            # Find connected regions in each cluster
-            for cluster_id in range(len(centers)):
-                cluster_mask = (labels.reshape(edge_region.shape[:2]) == cluster_id).astype(np.uint8)
+            for contour in contours:
+                area = cv2.contourArea(contour)
                 
-                contours, _ = cv2.findContours(cluster_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if area < self.min_swatch_area * 0.8:
+                    continue
+                if area > self.width * self.height * 0.3:
+                    continue
                 
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    
-                    # Flexible sizing for edge swatches
-                    if area < self.min_swatch_area * 0.4:
-                        continue
-                    if area > (self.width * self.height) * 0.2:
-                        continue
-                    
-                    x, y, w, h = cv2.boundingRect(contour)
-                    
-                    # Convert back to full image coordinates
-                    x += x1
-                    y += y1
-                    
-                    region = self.image[y:y+h, x:x+w]
-                    if region.size == 0:
-                        continue
-                    
-                    # Sample center pixel for vibrant colors
-                    center_y, center_x = h // 2, w // 2
-                    if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
-                        center_color = region[center_y, center_x]
-                        rgb = tuple(int(c) for c in reversed(center_color))
-                    else:
-                        avg_color = np.mean(region, axis=(0, 1))
-                        rgb = tuple(int(c) for c in reversed(avg_color))
-                    
-                    hex_color = self._rgb_to_hex(rgb)
-                    
-                    shape_type = self._classify_shape(contour, w, h)
-                    if not shape_type:
-                        continue
-                    
-                    swatch = {
-                        'type': 'swatch',
-                        'x': int(x),
-                        'y': int(y),
-                        'width': int(w),
-                        'height': int(h),
-                        'area': int(area),
-                        'color_rgb': rgb,
-                        'color_hex': hex_color
-                    }
-                    swatches.append(swatch)
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                # Adjust y coordinate back to full image
+                y += bottom_y
+                
+                region = self.image[y:y+h, x:x+w]
+                if region.size == 0:
+                    continue
+                
+                # Sample center pixel for vibrant colors
+                center_y, center_x = h // 2, w // 2
+                if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
+                    center_color = region[center_y, center_x]
+                    rgb = tuple(int(c) for c in reversed(center_color))
+                else:
+                    avg_color = np.mean(region, axis=(0, 1))
+                    rgb = tuple(int(c) for c in reversed(avg_color))
+                
+                hex_color = self._rgb_to_hex(rgb)
+                
+                shape_type = self._classify_shape(contour, w, h)
+                if not shape_type:
+                    continue
+                
+                swatch = {
+                    'type': shape_type,
+                    'x': int(x),
+                    'y': int(y),
+                    'width': int(w),
+                    'height': int(h),
+                    'area': int(area),
+                    'color_rgb': rgb,
+                    'color_hex': hex_color
+                }
+                swatches.append(swatch)
         
         return swatches
 
@@ -223,37 +200,34 @@ class SwatchDetector:
         if w == 0 or h == 0:
             return None
         
-        try:
-            epsilon = 0.02 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            num_vertices = len(approx)
-            
-            area = cv2.contourArea(contour)
-            perimeter = cv2.arcLength(contour, True)
-            
-            if perimeter == 0:
-                return 'rectangle'
-            
-            circularity = 4 * np.pi * area / (perimeter ** 2)
-            aspect_ratio = w / h if h > 0 else 1
-            
-            # Circle
-            if circularity > 0.75:
-                return 'circle'
-            
-            # Square or Rectangle
-            if num_vertices == 4:
-                if 0.75 < aspect_ratio < 1.25:
-                    return 'square'
-                else:
-                    return 'rectangle'
-            
-            if 3 <= num_vertices <= 8:
-                return 'rectangle'
-            
-            return None
-        except:
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        num_vertices = len(approx)
+        
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        if perimeter == 0:
             return 'rectangle'
+        
+        circularity = 4 * np.pi * area / (perimeter ** 2)
+        aspect_ratio = w / h if h > 0 else 1
+        
+        # Circle
+        if circularity > 0.75:
+            return 'circle'
+        
+        # Square or Rectangle
+        if num_vertices == 4:
+            if 0.75 < aspect_ratio < 1.25:
+                return 'square'
+            else:
+                return 'rectangle'
+        
+        if 3 <= num_vertices <= 8:
+            return 'rectangle'
+        
+        return None
 
     def _deduplicate(self, swatches):
         """Remove duplicate swatches"""
@@ -288,20 +262,26 @@ class SwatchDetector:
 
     def _rgb_to_hex(self, rgb):
         """Convert RGB to hex"""
-        return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
     def _is_white(self, rgb):
         """Check if color is white (R, G, B all > 240)"""
         return rgb[0] > 240 and rgb[1] > 240 and rgb[2] > 240
 
-    def _extract_dominant_colors(self, num_colors=100):
+    def _extract_dominant_colors(self, num_colors=10):
         """Extract dominant colors from image as fallback palette"""
         try:
             if num_colors <= 0:
                 return []
             
-            # Use full resolution image (no resizing to preserve vibrancy)
-            pixels = self.image.reshape((-1, 3))
+            # Resize image for faster processing
+            small_height = min(200, self.height)
+            scale = small_height / self.height
+            small_width = int(self.width * scale)
+            small_image = cv2.resize(self.image, (small_width, small_height))
+            
+            # K-means clustering - search through many clusters to find diverse colors
+            pixels = small_image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
@@ -349,7 +329,6 @@ class SwatchDetector:
             return swatches
         except Exception as e:
             print(f"Error extracting dominant colors: {e}")
-            traceback.print_exc()
             return []
 
 
@@ -372,55 +351,28 @@ def detect_swatches():
         return '', 204
     
     try:
-        print('📡 [API] Received detect-swatches request')
         data = request.get_json()
-        print(f'📊 [API] Request data keys: {list(data.keys()) if data else None}')
-        
         if not data or 'image' not in data:
-            print('❌ [API] No image in request')
             return jsonify({'success': False, 'error': 'No image provided'}), 400
 
         image_data = data['image']
-        print(f'📸 [API] Image data length: {len(image_data)} chars')
-        
         min_swatch_area = data.get('min_swatch_area', 400)
 
         if isinstance(image_data, str) and image_data.startswith('data:'):
-            print('✂️ [API] Stripping data: prefix')
             image_data = image_data.split(',')[1]
 
-        print('🔄 [API] Decoding base64...')
         image_bytes = base64.b64decode(image_data)
-        print(f'✅ [API] Decoded {len(image_bytes)} bytes')
-        
-        print('📖 [API] Loading image with PIL...')
         image_pil = Image.open(io.BytesIO(image_bytes))
-        print(f'📐 [API] Image size: {image_pil.size}')
-        
-        print('🎨 [API] Converting to OpenCV format...')
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-        print(f'✅ [API] Image array shape: {image_array.shape}')
         
-        print('🔍 [API] Creating SwatchDetector...')
         detector = SwatchDetector(image_array, min_swatch_area)
-        
-        print('🔎 [API] Running detect()...')
-        swatches = detector.detect()
-        print(f'✅ [API] Detection complete! Found {len(swatches)} colors')
+        swatches = detector.detect_swatches()
 
-        response = {
+        return jsonify({
             'success': True,
             'swatches': swatches,
             'count': len(swatches)
-        }
-        print(f'📤 [API] Returning response with {len(swatches)} swatches')
-        return jsonify(response), 200
+        }), 200
 
     except Exception as e:
-        print(f"❌ [API] Error: {e}")
-        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-
-
-if __name__ == '__main__':
-    app.run()
