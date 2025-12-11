@@ -57,12 +57,40 @@ def delta_e(rgb1, rgb2):
     return distance
 
 
+class ColorCache:
+    """Cache LAB values to avoid recalculating"""
+    def __init__(self):
+        self.cache = {}
+    
+    def delta_e(self, rgb1, rgb2):
+        """Get cached delta E or calculate and cache"""
+        key1 = tuple(rgb1)
+        key2 = tuple(rgb2)
+        
+        if key1 not in self.cache:
+            self.cache[key1] = rgb_to_lab(rgb1)
+        if key2 not in self.cache:
+            self.cache[key2] = rgb_to_lab(rgb2)
+        
+        lab1 = self.cache[key1]
+        lab2 = self.cache[key2]
+        
+        distance = np.sqrt(
+            (lab1[0] - lab2[0]) ** 2 +
+            (lab1[1] - lab2[1]) ** 2 +
+            (lab1[2] - lab2[2]) ** 2
+        )
+        
+        return distance
+
+
 class SwatchDetector:
     def __init__(self, image_array, min_swatch_area=400):
         self.image = image_array
         self.height, self.width = self.image.shape[:2]
         self.min_swatch_area = min_swatch_area
         self.swatches = []
+        self.color_cache = ColorCache()  # Cache LAB conversions
 
     def detect_swatches(self):
         """Detect swatches using multiple strategies"""
@@ -115,9 +143,9 @@ class SwatchDetector:
         for swatch in swatches:
             is_similar = False
             
-            # Check distance to all already-filtered swatches using Delta E
+            # Check distance to all already-filtered swatches using cached Delta E
             for existing in filtered:
-                perceptual_distance = delta_e(swatch['color_rgb'], existing['color_rgb'])
+                perceptual_distance = self.color_cache.delta_e(swatch['color_rgb'], existing['color_rgb'])
                 
                 # If within distance threshold, skip this swatch
                 # Delta E 15 is roughly equivalent to "just noticeable difference"
@@ -313,7 +341,7 @@ class SwatchDetector:
         return None
 
     def _deduplicate(self, swatches):
-        """Remove duplicate swatches using Delta E for color similarity"""
+        """Remove duplicate swatches using cached Delta E for color similarity"""
         if not swatches:
             return []
         
@@ -322,8 +350,8 @@ class SwatchDetector:
             is_dup = False
             
             for existing in unique:
-                # Perceptual color distance
-                perceptual_distance = delta_e(swatch['color_rgb'], existing['color_rgb'])
+                # Perceptual color distance using cache
+                perceptual_distance = self.color_cache.delta_e(swatch['color_rgb'], existing['color_rgb'])
                 
                 # Spatial overlap
                 s_x1, s_y1 = swatch['x'], swatch['y']
@@ -384,7 +412,7 @@ class SwatchDetector:
                 # Avoid duplicate colors (within palette only)
                 is_duplicate = False
                 for existing in swatches:
-                    perceptual_distance = delta_e(rgb, existing['color_rgb'])
+                    perceptual_distance = self.color_cache.delta_e(rgb, existing['color_rgb'])
                     if perceptual_distance < 8:  # Delta E < 8 is clearly distinguishable
                         is_duplicate = True
                         break
