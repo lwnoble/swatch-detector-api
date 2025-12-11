@@ -37,30 +37,27 @@ class SwatchDetector:
         # Separate swatches and palette
         detected_swatches = [s for s in filtered_swatches if s['type'] == 'swatch']
         
-        # Limit to 6 swatches max
-        detected_swatches = detected_swatches[:6]
+        # If we found actual swatches, limit to 6
+        if detected_swatches:
+            detected_swatches = detected_swatches[:6]
+            # Extract palette colors and filter to avoid duplicates with swatches
+            all_palette = self._extract_dominant_colors(100)
+            filtered_palette = []
+            for palette_color in all_palette:
+                is_duplicate = False
+                for swatch in detected_swatches:
+                    color_diff = sum(abs(int(a) - int(b)) for a, b in zip(palette_color['color_rgb'], swatch['color_rgb']))
+                    if color_diff < 50:
+                        is_duplicate = True
+                        break
+                if not is_duplicate:
+                    filtered_palette.append(palette_color)
+            filtered_palette = filtered_palette[:48]
+            all_colors = detected_swatches + filtered_palette
+        else:
+            # No swatches found - get 54 dominant colors instead (6 + 48)
+            all_colors = self._extract_dominant_colors(54)
         
-        # Extract palette colors, but filter to avoid colors too similar to swatches
-        all_palette = self._extract_dominant_colors(100)  # Get more, then filter
-        
-        # Remove colors that are too similar to detected swatches
-        filtered_palette = []
-        for palette_color in all_palette:
-            is_duplicate = False
-            for swatch in detected_swatches:
-                # Check if color is too similar to any swatch (within 50 RGB difference)
-                color_diff = sum(abs(int(a) - int(b)) for a, b in zip(palette_color['color_rgb'], swatch['color_rgb']))
-                if color_diff < 50:
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                filtered_palette.append(palette_color)
-        
-        # Limit to 48 palette colors max
-        filtered_palette = filtered_palette[:48]
-        
-        # Combine: 6 swatches + up to 48 palette colors
-        all_colors = detected_swatches + filtered_palette
         self.swatches = all_colors
         self.swatches.sort(key=lambda s: s['area'], reverse=True)
         
