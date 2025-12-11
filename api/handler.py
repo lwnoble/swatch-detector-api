@@ -8,6 +8,55 @@ from PIL import Image
 app = Flask(__name__)
 
 
+def rgb_to_lab(rgb):
+    """Convert RGB to LAB color space for perceptual distance"""
+    # Normalize RGB to 0-1
+    r, g, b = [x / 255.0 for x in rgb]
+    
+    # Apply gamma correction
+    def gamma_correct(c):
+        if c <= 0.04045:
+            return c / 12.92
+        return ((c + 0.055) / 1.055) ** 2.4
+    
+    r, g, b = gamma_correct(r), gamma_correct(g), gamma_correct(b)
+    
+    # RGB to XYZ
+    x = r * 0.4124 + g * 0.3576 + b * 0.1805
+    y = r * 0.2126 + g * 0.7152 + b * 0.0722
+    z = r * 0.0193 + g * 0.1192 + b * 0.9505
+    
+    # Normalize by D65 illuminant
+    x, y, z = x / 0.95047, y / 1.00000, z / 1.08883
+    
+    # XYZ to LAB
+    def f(t):
+        if t > 0.008856:
+            return t ** (1/3)
+        return (7.787 * t) + (16/116)
+    
+    l = (116 * f(y)) - 16
+    a = 500 * (f(x) - f(y))
+    b_val = 200 * (f(y) - f(z))
+    
+    return (l, a, b_val)
+
+
+def delta_e(rgb1, rgb2):
+    """Calculate Delta E (CIELAB) - perceptual color distance"""
+    lab1 = rgb_to_lab(rgb1)
+    lab2 = rgb_to_lab(rgb2)
+    
+    # Euclidean distance in LAB space
+    distance = np.sqrt(
+        (lab1[0] - lab2[0]) ** 2 +
+        (lab1[1] - lab2[1]) ** 2 +
+        (lab1[2] - lab2[2]) ** 2
+    )
+    
+    return distance
+
+
 class SwatchDetector:
     def __init__(self, image_array, min_swatch_area=400):
         self.image = image_array
@@ -33,20 +82,54 @@ class SwatchDetector:
         # Filter out white colors
         filtered_swatches = [s for s in unique_swatches if not self._is_white(s['color_rgb'])]
         
-        # Mark all detected swatches with type='swatch'
-        for swatch in filtered_swatches:
+        # Filter swatches by color distance - remove if within distance of 8 to another swatch
+        distinct_swatches = self._filter_similar_swatches(filtered_swatches, distance_threshold=8)
+        
+        # Mark as swatches and limit to 6
+        for swatch in distinct_swatches:
             swatch['type'] = 'swatch'
         
-        # Always add palette colors to reach 10 total
-        if len(filtered_swatches) < 10:
-            palette_colors = self._extract_dominant_colors(10 - len(filtered_swatches))
-            filtered_swatches.extend(palette_colors)
+        detected_swatches = distinct_swatches[:6]
         
-        # Limit to 10 colors max
-        self.swatches = filtered_swatches[:10]
-        self.swatches.sort(key=lambda s: s['area'], reverse=True)
+        # Get palette colors (48 additional colors)
+        palette_colors = self._extract_dominant_colors(48)
+        
+        # Mark palette colors
+        for color in palette_colors:
+            color['type'] = 'palette'
+        
+        # Combine: 6 swatches + 48 palette = 54 total
+        all_colors = detected_swatches + palette_colors
+        self.swatches = all_colors
+        
+        print(f'✅ Returning {len(detected_swatches)} swatches + {len(palette_colors)} palette = {len(all_colors)} total')
         
         return self.swatches
+
+    def _filter_similar_swatches(self, swatches, distance_threshold=15):
+        """Filter out swatches that are too similar to each other using Delta E"""
+        if not swatches:
+            return []
+        
+        filtered = []
+        for swatch in swatches:
+            is_similar = False
+            
+            # Check distance to all already-filtered swatches using Delta E
+            for existing in filtered:
+                perceptual_distance = delta_e(swatch['color_rgb'], existing['color_rgb'])
+                
+                # If within distance threshold, skip this swatch
+                # Delta E 15 is roughly equivalent to "just noticeable difference"
+                if perceptual_distance <= distance_threshold:
+                    is_similar = True
+                    break
+            
+            # If not similar to any existing, add it
+            if not is_similar:
+                filtered.append(swatch)
+        
+        return filtered
 
     def _find_uniform_blocks(self):
         """Find solid color blocks using K-means + connected components"""
@@ -230,7 +313,7 @@ class SwatchDetector:
         return None
 
     def _deduplicate(self, swatches):
-        """Remove duplicate swatches"""
+        """Remove duplicate swatches using Delta E for color similarity"""
         if not swatches:
             return []
         
@@ -239,8 +322,8 @@ class SwatchDetector:
             is_dup = False
             
             for existing in unique:
-                # Color similarity
-                color_diff = sum(abs(a - b) for a, b in zip(swatch['color_rgb'], existing['color_rgb']))
+                # Perceptual color distance
+                perceptual_distance = delta_e(swatch['color_rgb'], existing['color_rgb'])
                 
                 # Spatial overlap
                 s_x1, s_y1 = swatch['x'], swatch['y']
@@ -251,7 +334,8 @@ class SwatchDetector:
                 
                 overlap = not (s_x2 < e_x1 or s_x1 > e_x2 or s_y2 < e_y1 or s_y1 > e_y2)
                 
-                if color_diff < 25 and overlap:
+                # Delta E < 5 is visually similar, and spatial overlap confirms duplicate
+                if perceptual_distance < 5 and overlap:
                     is_dup = True
                     break
             
@@ -268,24 +352,18 @@ class SwatchDetector:
         """Check if color is white (R, G, B all > 240)"""
         return rgb[0] > 240 and rgb[1] > 240 and rgb[2] > 240
 
-    def _extract_dominant_colors(self, num_colors=10):
-        """Extract dominant colors from image as fallback palette"""
+    def _extract_dominant_colors(self, num_colors=48):
+        """Extract dominant colors from image as fallback palette - NO RESIZING"""
         try:
             if num_colors <= 0:
                 return []
             
-            # Resize image for faster processing
-            small_height = min(200, self.height)
-            scale = small_height / self.height
-            small_width = int(self.width * scale)
-            small_image = cv2.resize(self.image, (small_width, small_height))
-            
-            # K-means clustering - search through many clusters to find diverse colors
-            pixels = small_image.reshape((-1, 3))
+            # Use full resolution image - NO resizing to preserve vibrancy
+            pixels = self.image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            num_clusters = min(num_colors * 3, 80)  # Search through more clusters for diversity
+            num_clusters = min(num_colors * 2, 100)  # Search through more clusters for diversity
             _, labels, centers = cv2.kmeans(pixels, num_clusters, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
             
             centers = np.uint8(centers)
@@ -303,11 +381,11 @@ class SwatchDetector:
                 
                 hex_color = self._rgb_to_hex(rgb)
                 
-                # Avoid duplicate colors (within palette only, not swatches)
+                # Avoid duplicate colors (within palette only)
                 is_duplicate = False
                 for existing in swatches:
-                    color_diff = sum(abs(int(a) - int(b)) for a, b in zip(rgb, existing['color_rgb']))
-                    if color_diff < 30:
+                    perceptual_distance = delta_e(rgb, existing['color_rgb'])
+                    if perceptual_distance < 8:  # Delta E < 8 is clearly distinguishable
                         is_duplicate = True
                         break
                 
