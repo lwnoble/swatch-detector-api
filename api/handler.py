@@ -4,6 +4,7 @@ import numpy as np
 import base64
 import io
 from PIL import Image
+import traceback
 
 app = Flask(__name__)
 
@@ -15,7 +16,7 @@ class SwatchDetector:
         self.min_swatch_area = min_swatch_area
         self.swatches = []
 
-    def detect_swatches(self):
+    def detect(self):
         """Detect swatches using multiple strategies"""
         all_swatches = []
         
@@ -33,17 +34,34 @@ class SwatchDetector:
         # Filter out white colors
         filtered_swatches = [s for s in unique_swatches if not self._is_white(s['color_rgb'])]
         
-        # Mark all detected swatches with type='swatch'
-        for swatch in filtered_swatches:
-            swatch['type'] = 'swatch'
+        # Separate swatches and palette
+        detected_swatches = [s for s in filtered_swatches if s['type'] == 'swatch']
         
-        # Always add palette colors to reach 10 total
-        if len(filtered_swatches) < 10:
-            palette_colors = self._extract_dominant_colors(10 - len(filtered_swatches))
-            filtered_swatches.extend(palette_colors)
+        # Limit to 6 swatches max
+        detected_swatches = detected_swatches[:6]
         
-        # Limit to 10 colors max
-        self.swatches = filtered_swatches[:10]
+        # Extract palette colors, but filter to avoid colors too similar to swatches
+        all_palette = self._extract_dominant_colors(100)  # Get more, then filter
+        
+        # Remove colors that are too similar to detected swatches
+        filtered_palette = []
+        for palette_color in all_palette:
+            is_duplicate = False
+            for swatch in detected_swatches:
+                # Check if color is too similar to any swatch (within 50 RGB difference)
+                color_diff = sum(abs(int(a) - int(b)) for a, b in zip(palette_color['color_rgb'], swatch['color_rgb']))
+                if color_diff < 50:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                filtered_palette.append(palette_color)
+        
+        # Limit to 48 palette colors max
+        filtered_palette = filtered_palette[:48]
+        
+        # Combine: 6 swatches + up to 48 palette colors
+        all_colors = detected_swatches + filtered_palette
+        self.swatches = all_colors
         self.swatches.sort(key=lambda s: s['area'], reverse=True)
         
         return self.swatches
@@ -106,7 +124,7 @@ class SwatchDetector:
                 continue
             
             swatch = {
-                'type': shape_type,
+                'type': 'swatch',
                 'x': int(x),
                 'y': int(y),
                 'width': int(w),
@@ -182,7 +200,7 @@ class SwatchDetector:
                     continue
                 
                 swatch = {
-                    'type': shape_type,
+                    'type': 'swatch',
                     'x': int(x),
                     'y': int(y),
                     'width': int(w),
@@ -200,34 +218,37 @@ class SwatchDetector:
         if w == 0 or h == 0:
             return None
         
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        num_vertices = len(approx)
-        
-        area = cv2.contourArea(contour)
-        perimeter = cv2.arcLength(contour, True)
-        
-        if perimeter == 0:
-            return 'rectangle'
-        
-        circularity = 4 * np.pi * area / (perimeter ** 2)
-        aspect_ratio = w / h if h > 0 else 1
-        
-        # Circle
-        if circularity > 0.75:
-            return 'circle'
-        
-        # Square or Rectangle
-        if num_vertices == 4:
-            if 0.75 < aspect_ratio < 1.25:
-                return 'square'
-            else:
+        try:
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            num_vertices = len(approx)
+            
+            area = cv2.contourArea(contour)
+            perimeter = cv2.arcLength(contour, True)
+            
+            if perimeter == 0:
                 return 'rectangle'
-        
-        if 3 <= num_vertices <= 8:
+            
+            circularity = 4 * np.pi * area / (perimeter ** 2)
+            aspect_ratio = w / h if h > 0 else 1
+            
+            # Circle
+            if circularity > 0.75:
+                return 'circle'
+            
+            # Square or Rectangle
+            if num_vertices == 4:
+                if 0.75 < aspect_ratio < 1.25:
+                    return 'square'
+                else:
+                    return 'rectangle'
+            
+            if 3 <= num_vertices <= 8:
+                return 'rectangle'
+            
+            return None
+        except:
             return 'rectangle'
-        
-        return None
 
     def _deduplicate(self, swatches):
         """Remove duplicate swatches"""
@@ -262,13 +283,13 @@ class SwatchDetector:
 
     def _rgb_to_hex(self, rgb):
         """Convert RGB to hex"""
-        return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
+        return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
     def _is_white(self, rgb):
         """Check if color is white (R, G, B all > 240)"""
         return rgb[0] > 240 and rgb[1] > 240 and rgb[2] > 240
 
-    def _extract_dominant_colors(self, num_colors=10):
+    def _extract_dominant_colors(self, num_colors=100):
         """Extract dominant colors from image as fallback palette"""
         try:
             if num_colors <= 0:
@@ -329,6 +350,7 @@ class SwatchDetector:
             return swatches
         except Exception as e:
             print(f"Error extracting dominant colors: {e}")
+            traceback.print_exc()
             return []
 
 
@@ -366,7 +388,7 @@ def detect_swatches():
         image_array = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         
         detector = SwatchDetector(image_array, min_swatch_area)
-        swatches = detector.detect_swatches()
+        swatches = detector.detect()
 
         return jsonify({
             'success': True,
@@ -375,4 +397,10 @@ def detect_swatches():
         }), 200
 
     except Exception as e:
+        print(f"Error: {e}")
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run()
