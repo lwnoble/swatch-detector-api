@@ -280,14 +280,8 @@ class SwatchDetector:
             if num_colors <= 0:
                 return []
             
-            # Resize image for faster processing
-            small_height = min(200, self.height)
-            scale = small_height / self.height
-            small_width = int(self.width * scale)
-            small_image = cv2.resize(self.image, (small_width, small_height))
-            
-            # K-means clustering - search through many clusters to find diverse colors
-            pixels = small_image.reshape((-1, 3))
+            # NO resizing - use full resolution for vibrant colors
+            pixels = self.image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
