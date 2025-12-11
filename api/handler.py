@@ -56,15 +56,21 @@ class SwatchDetector:
 
     def _find_uniform_blocks(self):
         """Find solid color blocks using K-means + connected components"""
-        # K-means clustering
-        pixels = self.image.reshape((-1, 3))
+        # Resize for faster K-means
+        small_height = min(400, self.height)
+        scale = small_height / self.height
+        small_width = int(self.width * scale)
+        small_image = cv2.resize(self.image, (small_width, small_height))
+        
+        # K-means clustering on resized image
+        pixels = small_image.reshape((-1, 3))
         pixels = np.float32(pixels)
         
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
         _, labels, centers = cv2.kmeans(pixels, 20, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
         
         centers = np.uint8(centers)
-        reduced = centers[labels.flatten()].reshape(self.image.shape)
+        reduced = centers[labels.flatten()].reshape(small_image.shape)
         
         # Convert to grayscale and find regions
         gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
@@ -83,12 +89,21 @@ class SwatchDetector:
         for contour in contours:
             area = cv2.contourArea(contour)
             
-            if area < self.min_swatch_area:
+            # Scale area threshold back to original image size
+            scaled_area = area / (scale * scale)
+            
+            if scaled_area < self.min_swatch_area:
                 continue
-            if area > self.width * self.height * 0.4:
+            if scaled_area > self.width * self.height * 0.4:
                 continue
             
             x, y, w, h = cv2.boundingRect(contour)
+            
+            # Scale coordinates back to original image
+            x = int(x / scale)
+            y = int(y / scale)
+            w = int(w / scale)
+            h = int(h / scale)
             
             # Get actual color from original image - sample center for vibrant colors
             region = self.image[y:y+h, x:x+w]
@@ -117,7 +132,7 @@ class SwatchDetector:
                 'y': int(y),
                 'width': int(w),
                 'height': int(h),
-                'area': int(area),
+                'area': int(scaled_area),
                 'color_rgb': rgb,
                 'color_hex': hex_color
             }
@@ -129,9 +144,15 @@ class SwatchDetector:
         """Look specifically for swatches in bottom/side regions of image"""
         swatches = []
         
-        # Check bottom 30% of image (common swatch location)
-        bottom_y = int(self.height * 0.7)
-        bottom_region = self.image[bottom_y:, :]
+        # Resize for faster K-means
+        small_height = min(400, self.height)
+        scale = small_height / self.height
+        small_width = int(self.width * scale)
+        small_image = cv2.resize(self.image, (small_width, small_height))
+        
+        # Check bottom 30% of resized image
+        bottom_y = int(small_height * 0.7)
+        bottom_region = small_image[bottom_y:, :]
         
         # K-means on bottom region
         pixels = bottom_region.reshape((-1, 3))
@@ -158,15 +179,21 @@ class SwatchDetector:
             for contour in contours:
                 area = cv2.contourArea(contour)
                 
-                if area < self.min_swatch_area * 0.8:
+                # Scale area back to original image
+                scaled_area = area / (scale * scale)
+                
+                if scaled_area < self.min_swatch_area * 0.8:
                     continue
-                if area > self.width * self.height * 0.3:
+                if scaled_area > self.width * self.height * 0.3:
                     continue
                 
                 x, y, w, h = cv2.boundingRect(contour)
                 
-                # Adjust y coordinate back to full image
-                y += bottom_y
+                # Scale coordinates back to full image
+                x = int(x / scale)
+                y = int((y + bottom_y) / scale)
+                w = int(w / scale)
+                h = int(h / scale)
                 
                 region = self.image[y:y+h, x:x+w]
                 if region.size == 0:
@@ -280,12 +307,19 @@ class SwatchDetector:
             if num_colors <= 0:
                 return []
             
-            # NO resizing - use full resolution for vibrant colors
-            pixels = self.image.reshape((-1, 3))
+            # Resize ONLY for K-means clustering (speed optimization)
+            # But we'll sample actual colors from full resolution
+            small_height = min(400, self.height)  # Increased from 200 for better color accuracy
+            scale = small_height / self.height
+            small_width = int(self.width * scale)
+            small_image = cv2.resize(self.image, (small_width, small_height))
+            
+            # K-means clustering on resized image for speed
+            pixels = small_image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            num_clusters = min(num_colors * 3, 80)  # Search through more clusters for diversity
+            num_clusters = min(num_colors * 3, 80)
             _, labels, centers = cv2.kmeans(pixels, num_clusters, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
             
             centers = np.uint8(centers)
