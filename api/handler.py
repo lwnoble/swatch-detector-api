@@ -20,12 +20,12 @@ class SwatchDetector:
         """Detect swatches using multiple strategies"""
         all_swatches = []
         
-        # Strategy 1: Find uniform color blocks
+        # Strategy 1: Find uniform color blocks across entire image
         swatches_1 = self._find_uniform_blocks()
         all_swatches.extend(swatches_1)
         
-        # Strategy 2: Look for organized color regions (grids/rows)
-        swatches_2 = self._find_organized_colors()
+        # Strategy 2: Check all edges and corners (left, right, top, bottom, corners)
+        swatches_2 = self._find_edge_swatches()
         all_swatches.extend(swatches_2)
         
         # Remove duplicates
@@ -134,79 +134,87 @@ class SwatchDetector:
         
         return swatches
 
-    def _find_organized_colors(self):
-        """Look specifically for swatches in bottom/side regions of image"""
+    def _find_edge_swatches(self):
+        """Find swatches on all edges: left, right, top, bottom, corners"""
         swatches = []
         
-        # Check bottom 30% of image (common swatch location)
-        bottom_y = int(self.height * 0.7)
-        bottom_region = self.image[bottom_y:, :]
+        # Define edge regions (each 25% of the image)
+        edges = {
+            'left': (0, 0, int(self.width * 0.25), self.height),
+            'right': (int(self.width * 0.75), 0, self.width, self.height),
+            'top': (0, 0, self.width, int(self.height * 0.25)),
+            'bottom': (0, int(self.height * 0.75), self.width, self.height),
+        }
         
-        # K-means on bottom region
-        pixels = bottom_region.reshape((-1, 3))
-        pixels = np.float32(pixels)
-        
-        if len(pixels) < 100:
-            return swatches
-        
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-        try:
-            _, labels, centers = cv2.kmeans(pixels, 15, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-        except:
-            return swatches
-        
-        centers = np.uint8(centers)
-        
-        # For each color cluster, find connected regions
-        for cluster_id in range(len(centers)):
-            cluster_mask = (labels.reshape(bottom_region.shape[:2]) == cluster_id).astype(np.uint8)
+        for edge_name, (x1, y1, x2, y2) in edges.items():
+            edge_region = self.image[y1:y2, x1:x2]
             
-            # Find contours in this cluster
-            contours, _ = cv2.findContours(cluster_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if edge_region.size < 100:
+                continue
             
-            for contour in contours:
-                area = cv2.contourArea(contour)
+            # K-means on edge region
+            pixels = edge_region.reshape((-1, 3))
+            pixels = np.float32(pixels)
+            
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+            try:
+                _, labels, centers = cv2.kmeans(pixels, 12, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+            except:
+                continue
+            
+            centers = np.uint8(centers)
+            
+            # Find connected regions in each cluster
+            for cluster_id in range(len(centers)):
+                cluster_mask = (labels.reshape(edge_region.shape[:2]) == cluster_id).astype(np.uint8)
                 
-                if area < self.min_swatch_area * 0.8:
-                    continue
-                if area > self.width * self.height * 0.3:
-                    continue
+                contours, _ = cv2.findContours(cluster_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
-                x, y, w, h = cv2.boundingRect(contour)
-                
-                # Adjust y coordinate back to full image
-                y += bottom_y
-                
-                region = self.image[y:y+h, x:x+w]
-                if region.size == 0:
-                    continue
-                
-                # Sample center pixel for vibrant colors
-                center_y, center_x = h // 2, w // 2
-                if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
-                    center_color = region[center_y, center_x]
-                    rgb = tuple(int(c) for c in reversed(center_color))
-                else:
-                    avg_color = np.mean(region, axis=(0, 1))
-                    rgb = tuple(int(c) for c in reversed(avg_color))
-                
-                hex_color = self._rgb_to_hex(rgb)
-                
-                shape_type = self._classify_shape(contour, w, h)
-                if not shape_type:
-                    continue
-                
-                swatch = {
-                    'type': 'swatch',
-                    'x': int(x),
-                    'y': int(y),
-                    'width': int(w),
-                    'height': int(h),
-                    'area': int(area),
-                    'color_rgb': rgb,
-                    'color_hex': hex_color
-                }
-                swatches.append(swatch)
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    
+                    # Flexible sizing for edge swatches
+                    if area < self.min_swatch_area * 0.4:
+                        continue
+                    if area > (self.width * self.height) * 0.2:
+                        continue
+                    
+                    x, y, w, h = cv2.boundingRect(contour)
+                    
+                    # Convert back to full image coordinates
+                    x += x1
+                    y += y1
+                    
+                    region = self.image[y:y+h, x:x+w]
+                    if region.size == 0:
+                        continue
+                    
+                    # Sample center pixel for vibrant colors
+                    center_y, center_x = h // 2, w // 2
+                    if 0 <= center_y < region.shape[0] and 0 <= center_x < region.shape[1]:
+                        center_color = region[center_y, center_x]
+                        rgb = tuple(int(c) for c in reversed(center_color))
+                    else:
+                        avg_color = np.mean(region, axis=(0, 1))
+                        rgb = tuple(int(c) for c in reversed(avg_color))
+                    
+                    hex_color = self._rgb_to_hex(rgb)
+                    
+                    shape_type = self._classify_shape(contour, w, h)
+                    if not shape_type:
+                        continue
+                    
+                    swatch = {
+                        'type': 'swatch',
+                        'x': int(x),
+                        'y': int(y),
+                        'width': int(w),
+                        'height': int(h),
+                        'area': int(area),
+                        'color_rgb': rgb,
+                        'color_hex': hex_color
+                    }
+                    swatches.append(swatch)
         
         return swatches
 
@@ -292,14 +300,8 @@ class SwatchDetector:
             if num_colors <= 0:
                 return []
             
-            # Resize image for faster processing
-            small_height = min(200, self.height)
-            scale = small_height / self.height
-            small_width = int(self.width * scale)
-            small_image = cv2.resize(self.image, (small_width, small_height))
-            
-            # K-means clustering - search through many clusters to find diverse colors
-            pixels = small_image.reshape((-1, 3))
+            # Use full resolution image (no resizing to preserve vibrancy)
+            pixels = self.image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
