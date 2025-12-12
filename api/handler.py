@@ -16,42 +16,29 @@ class SwatchDetector:
         self.swatches = []
 
     def detect_swatches(self):
-        """Detect swatches using multiple strategies"""
-        all_swatches = []
+        """Detect swatches - simplified to extract dominant colors only"""
+        # Just extract the top 6 dominant colors as swatches
+        # Then get 48 more palette colors
         
-        # Strategy 1: Find uniform color blocks
-        swatches_1 = self._find_uniform_blocks()
-        all_swatches.extend(swatches_1)
+        print(f"🎨 Extracting colors from {self.width}x{self.height} image...")
         
-        # Strategy 2: Look for organized color regions (grids/rows)
-        swatches_2 = self._find_organized_colors()
-        all_swatches.extend(swatches_2)
+        # Get top 6 colors
+        top_colors = self._extract_dominant_colors(6)
         
-        # Remove duplicates
-        unique_swatches = self._deduplicate(all_swatches)
+        # Mark as swatches
+        for color in top_colors:
+            color['type'] = 'swatch'
         
-        # Filter out white colors
-        filtered_swatches = [s for s in unique_swatches if not self._is_white(s['color_rgb'])]
+        # Get 48 palette colors
+        palette_colors = self._extract_dominant_colors(48)
+        for color in palette_colors:
+            color['type'] = 'palette'
         
-        # Mark all detected swatches with type='swatch'
-        for swatch in filtered_swatches:
-            swatch['type'] = 'swatch'
-        
-        # Separate swatches and palette
-        detected_swatches = [s for s in filtered_swatches if s['type'] == 'swatch']
-        
-        # Limit to 6 swatches max
-        detected_swatches = detected_swatches[:6]
-        
-        # Add palette colors to reach 48 total (in addition to swatches)
-        num_palette_needed = 48
-        palette_colors = self._extract_dominant_colors(num_palette_needed)
-        
-        # Combine and sort by area
-        all_colors = detected_swatches + palette_colors
+        # Combine
+        all_colors = top_colors + palette_colors
         self.swatches = all_colors
-        self.swatches.sort(key=lambda s: s['area'], reverse=True)
         
+        print(f"✅ Returning {len(all_colors)} colors")
         return self.swatches
 
     def _find_uniform_blocks(self):
@@ -302,67 +289,79 @@ class SwatchDetector:
         return rgb[0] > 240 and rgb[1] > 240 and rgb[2] > 240
 
     def _extract_dominant_colors(self, num_colors=10):
-        """Extract dominant colors from image as fallback palette"""
+        """Extract dominant colors from image - finds visually distinct colors"""
         try:
             if num_colors <= 0:
                 return []
             
-            # Resize ONLY for K-means clustering (speed optimization)
-            # But we'll sample actual colors from full resolution
-            small_height = min(400, self.height)  # Increased from 200 for better color accuracy
+            print(f"🎨 Extracting {num_colors} colors...")
+            
+            # Resize for K-means speed
+            small_height = min(400, self.height)
             scale = small_height / self.height
             small_width = int(self.width * scale)
             small_image = cv2.resize(self.image, (small_width, small_height))
             
-            # K-means clustering on resized image for speed
+            # K-means with enough clusters to capture variety
             pixels = small_image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-            num_clusters = min(num_colors * 3, 80)
+            # Use more clusters to get better color variety
+            num_clusters = min(num_colors * 5, 256)
             _, labels, centers = cv2.kmeans(pixels, num_clusters, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
             
             centers = np.uint8(centers)
             label_counts = np.bincount(labels.flatten())
             sorted_indices = np.argsort(-label_counts)
             
-            swatches = []
+            colors = []
             for center_idx in sorted_indices:
+                if len(colors) >= num_colors:
+                    break
+                
                 bgr_color = centers[center_idx]
                 rgb = tuple(int(c) for c in reversed(bgr_color))
                 
-                # Skip white colors
-                if self._is_white(rgb):
+                # Skip ONLY pure white (all channels > 250)
+                if rgb[0] > 250 and rgb[1] > 250 and rgb[2] > 250:
+                    print(f"  ⊘ Skipping pure white: {rgb}")
                     continue
+                
+                # Skip very dark colors (near black) - optional
+                # if rgb[0] < 15 and rgb[1] < 15 and rgb[2] < 15:
+                #     continue
                 
                 hex_color = self._rgb_to_hex(rgb)
                 
-                # Avoid duplicate colors (within palette only, not swatches)
+                # Check if too similar to existing colors
                 is_duplicate = False
-                for existing in swatches:
-                    color_diff = sum(abs(int(a) - int(b)) for a, b in zip(rgb, existing['color_rgb']))
-                    if color_diff < 30:
+                for existing in colors:
+                    color_diff = sum(abs(a - b) for a, b in zip(rgb, existing['color_rgb']))
+                    if color_diff < 25:  # Reduced from 40 to capture more color variations
                         is_duplicate = True
                         break
                 
-                if not is_duplicate and len(swatches) < num_colors:
-                    swatches.append({
+                if not is_duplicate:
+                    colors.append({
                         'type': 'palette',
                         'x': 0,
                         'y': 0,
                         'width': 0,
                         'height': 0,
                         'area': int(label_counts[center_idx]),
-                        'color_rgb': rgb,
+                        'color_rgb': list(rgb),
                         'color_hex': hex_color
                     })
-                
-                if len(swatches) >= num_colors:
-                    break
+                    print(f"  ✓ Added {hex_color} {rgb}")
             
-            return swatches
+            print(f"✅ Extracted {len(colors)} colors")
+            return colors
+            
         except Exception as e:
-            print(f"Error extracting dominant colors: {e}")
+            print(f"❌ Error extracting colors: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
 
