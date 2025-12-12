@@ -294,21 +294,17 @@ class SwatchDetector:
             if num_colors <= 0:
                 return []
             
-            print(f"🎨 Extracting {num_colors} colors...")
+            print(f"🎨 Extracting {num_colors} colors from full resolution {self.width}x{self.height}...")
             
-            # Resize for K-means speed
-            small_height = min(400, self.height)
-            scale = small_height / self.height
-            small_width = int(self.width * scale)
-            small_image = cv2.resize(self.image, (small_width, small_height))
-            
-            # K-means with enough clusters to capture variety
-            pixels = small_image.reshape((-1, 3))
+            # Use FULL RESOLUTION for accurate colors
+            pixels = self.image.reshape((-1, 3))
             pixels = np.float32(pixels)
             
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
             # Use more clusters to get better color variety
             num_clusters = min(num_colors * 5, 256)
+            print(f"  Running K-means with {num_clusters} clusters on {len(pixels)} pixels...")
+            
             _, labels, centers = cv2.kmeans(pixels, num_clusters, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
             
             centers = np.uint8(centers)
@@ -327,10 +323,6 @@ class SwatchDetector:
                 if rgb[0] > 250 and rgb[1] > 250 and rgb[2] > 250:
                     print(f"  ⊘ Skipping pure white: {rgb}")
                     continue
-                
-                # Skip very dark colors (near black) - optional
-                # if rgb[0] < 15 and rgb[1] < 15 and rgb[2] < 15:
-                #     continue
                 
                 hex_color = self._rgb_to_hex(rgb)
                 
